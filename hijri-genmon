@@ -1,0 +1,17 @@
+#!/bin/bash
+TIME=$(date +%H:%M)
+CACHE="$HOME/.cache/hijri-date-cache"
+
+if [ ! -f "$CACHE" ] || [ $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )) -gt 300 ]; then
+    mkdir -p ~/.cache
+    $HOME/bin/hijri-date tiny > "$CACHE.tiny" &
+    $HOME/bin/hijri-date panel > "$CACHE.full" &
+    wait
+fi
+
+HIJRI=$(cat "$CACHE.tiny" 2>/dev/null || echo "...")
+FULL=$(cat "$CACHE.full" 2>/dev/null || echo "...")
+
+echo "<txt><span font='DSEG7 Modern Bold 22'>${TIME}</span> <span font='Sans 9'>${HIJRI}</span></txt>"
+echo "<tool>${FULL}</tool>"
+echo "<txtclick>$HOME/bin/hijri-calendar</txtclick>"

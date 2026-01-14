@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+import sys
+import os
+from datetime import date, timedelta
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+from hijri_converter import Hijri, Gregorian
+
+CONFIG_FILE = os.path.expanduser("~/.config/hijri-date.conf")
+
+HIJRI_MONTHS_EN = {
+    1: "Muharram",
+    2: "Safar",
+    3: "Rabi' al-Awwal",
+    4: "Rabi' al-Thani",
+    5: "Jumada al-Ula",
+    6: "Jumada al-Thani",
+    7: "Rajab",
+    8: "Sha'ban",
+    9: "Ramadan",
+    10: "Shawwal",
+    11: "Dhul-Qa'dah",
+    12: "Dhul-Hijjah"
+}
+
+WEEKDAYS_EN = {
+    0: "al-Ithnayn",
+    1: "al-Thulatha",
+    2: "al-Arbi'a",
+    3: "al-Khamis",
+    4: "al-Jumu'ah",
+    5: "al-Sabt",
+    6: "al-Ahad"
+}
+
+HIJRI_MONTHS_AR = {
+    1: "محرّم",
+    2: "صفر",
+    3: "ربيع الأول",
+    4: "ربيع الآخر",
+    5: "جمادى الأولى",
+    6: "جمادى الآخرة",
+    7: "رجب",
+    8: "شعبان",
+    9: "رمضان",
+    10: "شوّال",
+    11: "ذو القعدة",
+    12: "ذو الحجة"
+}
+
+WEEKDAYS_AR = {
+    0: "الإثنين",
+    1: "الثلاثاء",
+    2: "الأربعاء",
+    3: "الخميس",
+    4: "الجمعة",
+    5: "السبت",
+    6: "الأحد"
+}
+
+def get_adjustment():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return int(f.read().strip())
+        except:
+            pass
+    return 0
+
+def set_adjustment(days):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, 'w') as f:
+        f.write(str(days))
+
+def get_hijri_date(adjustment=0):
+    today = date.today()
+    hijri = Gregorian(today.year, today.month, today.day).to_hijri()
+
+    if adjustment != 0:
+        new_day = hijri.day + adjustment
+        new_month = hijri.month
+        new_year = hijri.year
+
+        month_len = hijri.month_length()
+
+        while new_day > month_len:
+            new_day -= month_len
+            new_month += 1
+            if new_month > 12:
+                new_month = 1
+                new_year += 1
+            month_len = Hijri(new_year, new_month, 1).month_length()
+
+        while new_day < 1:
+            new_month -= 1
+            if new_month < 1:
+                new_month = 12
+                new_year -= 1
+            month_len = Hijri(new_year, new_month, 1).month_length()
+            new_day += month_len
+
+        hijri = Hijri(new_year, new_month, new_day)
+
+    return hijri, today
+
+def format_date(hijri, gregorian, fmt="full"):
+    weekday = gregorian.weekday()
+
+    if fmt == "short":
+        return f"{hijri.day} {HIJRI_MONTHS_EN[hijri.month]} {hijri.year}"
+    elif fmt == "tiny":
+        return f"{hijri.day} {HIJRI_MONTHS_EN[hijri.month][:3]}"
+    elif fmt == "panel":
+        return f"{WEEKDAYS_EN[weekday]} {hijri.day} {HIJRI_MONTHS_EN[hijri.month]} {hijri.year}"
+    elif fmt == "ar":
+        return f"{WEEKDAYS_AR[weekday]} {hijri.day} {HIJRI_MONTHS_AR[hijri.month]} {hijri.year}"
+    else:
+        return f"{WEEKDAYS_EN[weekday]} {hijri.day} {HIJRI_MONTHS_EN[hijri.month]} {hijri.year} H"
+
+def show_adjustment_dialog():
+    import subprocess
+    current = get_adjustment()
+
+    result = subprocess.run([
+        'zenity', '--scale',
+        '--title=Корректировка даты хиджры',
+        '--text=Сдвиг в днях (для корректировки начала месяца):',
+        '--min-value=-3',
+        '--max-value=3',
+        '--value=' + str(current),
+        '--step=1'
+    ], capture_output=True, text=True)
+
+    if result.returncode == 0:
+        new_adj = int(result.stdout.strip())
+        set_adjustment(new_adj)
+        subprocess.run(['notify-send', 'Дата хиджры', f'Корректировка установлена: {new_adj:+d} дней'])
+
+def main():
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+
+        if cmd == "adjust":
+            show_adjustment_dialog()
+            return
+
+        if cmd == "set":
+            if len(sys.argv) > 2:
+                set_adjustment(int(sys.argv[2]))
+                print(f"Корректировка установлена: {sys.argv[2]}")
+            return
+
+        if cmd == "get-adj":
+            print(get_adjustment())
+            return
+
+        if cmd in ["short", "tiny", "panel", "ar", "full"]:
+            fmt = cmd
+        else:
+            fmt = "full"
+    else:
+        fmt = "full"
+
+    adjustment = get_adjustment()
+    hijri, gregorian = get_hijri_date(adjustment)
+    print(format_date(hijri, gregorian, fmt))
+
+if __name__ == "__main__":
+    main()

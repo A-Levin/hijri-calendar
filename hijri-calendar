@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk
+import os
+import sys
+import fcntl
+from datetime import date, timedelta
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+from hijri_converter import Hijri, Gregorian
+
+import json
+
+CONFIG_FILE = os.path.expanduser("~/.config/hijri-date.conf")
+SETTINGS_FILE = os.path.expanduser("~/.config/hijri-calendar.json")
+LOCK_FILE = os.path.expanduser("/tmp/hijri-calendar.lock")
+
+MONTHS_EN = {
+    1: "Muharram", 2: "Safar", 3: "Rabi' al-Awwal", 4: "Rabi' al-Thani",
+    5: "Jumada al-Ula", 6: "Jumada al-Thani", 7: "Rajab", 8: "Sha'ban",
+    9: "Ramadan", 10: "Shawwal", 11: "Dhul-Qa'dah", 12: "Dhul-Hijjah"
+}
+
+WEEKDAYS = ["Ith", "Thu", "Arb", "Kha", "Jum", "Sab", "Aha"]
+
+def load_settings():
+    defaults = {"first_weekday": 0}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                return {**defaults, **settings}
+        except:
+            pass
+    return defaults
+
+def save_settings(settings):
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f)
+
+def acquire_lock():
+    lock_file = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except IOError:
+        return None
+
+class HijriCalendar(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_title("Hijri Calendar")
+        self.set_default_size(280, 250)
+        self.set_border_width(8)
+        self.set_position(Gtk.WindowPosition.MOUSE)
+        self.set_decorated(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.POPUP_MENU)
+
+        self.settings = load_settings()
+        self.adjustment = self.load_adjustment()
+        today = date.today()
+        hijri = Gregorian(today.year, today.month, today.day).to_hijri()
+        if self.adjustment:
+            hijri = self.apply_hijri_adjustment(hijri, self.adjustment)
+        self.current_year = hijri.year
+        self.current_month = hijri.month
+        self.today_hijri = hijri
+
+        self.apply_dark_theme()
+        self.build_ui()
+
+        self.connect("key-press-event", self.on_key_press)
+        self.connect("focus-out-event", self.on_focus_out)
+
+    def apply_hijri_adjustment(self, hijri, adj):
+        new_day = hijri.day + adj
+        new_month = hijri.month
+        new_year = hijri.year
+        month_len = hijri.month_length()
+        while new_day > month_len:
+            new_day -= month_len
+            new_month += 1
+            if new_month > 12:
+                new_month = 1
+                new_year += 1
+            month_len = Hijri(new_year, new_month, 1).month_length()
+        while new_day < 1:
+            new_month -= 1
+            if new_month < 1:
+                new_month = 12
+                new_year -= 1
+            month_len = Hijri(new_year, new_month, 1).month_length()
+            new_day += month_len
+        return Hijri(new_year, new_month, new_day)
+
+    def on_focus_out(self, widget, event):
+        self.close()
+        return True
+
+    def apply_dark_theme(self):
+        css = b"""
+        window {
+            background-color: #2d2d2d;
+            border: 1px solid #555;
+            border-radius: 6px;
+        }
+        label { color: #e0e0e0; }
+        button {
+            background: #3d3d3d;
+            color: #e0e0e0;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            min-height: 0;
+            min-width: 0;
+        }
+        button:hover { background: #4d4d4d; }
+        .today {
+            background: #5294e2;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .weekday { color: #888; font-size: 10px; }
+        .day { font-size: 12px; padding: 4px; }
+        .header { font-size: 13px; font-weight: bold; }
+        .nav-btn { font-size: 14px; padding: 2px 8px; }
+        .adj-label { font-size: 9px; color: #888; }
+        """
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    def load_adjustment(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    return int(f.read().strip())
+            except:
+                pass
+        return 0
+
+    def save_adjustment(self, adj):
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            f.write(str(adj))
+        self.adjustment = adj
+
+    def build_ui(self):
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add(main_box)
+
+        nav_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        main_box.pack_start(nav_box, False, False, 0)
+
+        btn_prev = Gtk.Button(label="◀")
+        btn_prev.get_style_context().add_class("nav-btn")
+        btn_prev.connect("clicked", self.prev_month)
+        nav_box.pack_start(btn_prev, False, False, 0)
+
+        self.header_label = Gtk.Label()
+        self.header_label.get_style_context().add_class("header")
+        nav_box.pack_start(self.header_label, True, True, 0)
+
+        btn_next = Gtk.Button(label="▶")
+        btn_next.get_style_context().add_class("nav-btn")
+        btn_next.connect("clicked", self.next_month)
+        nav_box.pack_end(btn_next, False, False, 0)
+
+        self.calendar_grid = Gtk.Grid()
+        self.calendar_grid.set_row_homogeneous(True)
+        self.calendar_grid.set_column_homogeneous(True)
+        main_box.pack_start(self.calendar_grid, True, True, 0)
+
+        bottom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        main_box.pack_start(bottom_box, False, False, 0)
+
+        btn_settings = Gtk.Button(label="⚙")
+        btn_settings.connect("clicked", self.show_settings)
+        bottom_box.pack_start(btn_settings, False, False, 0)
+
+        adj_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        bottom_box.pack_end(adj_box, False, False, 0)
+
+        btn_minus = Gtk.Button(label="-")
+        btn_minus.connect("clicked", lambda w: self.change_adjustment(-1))
+        adj_box.pack_start(btn_minus, False, False, 0)
+
+        self.adj_label = Gtk.Label(label=f"{self.adjustment:+d}" if self.adjustment else "0")
+        self.adj_label.get_style_context().add_class("adj-label")
+        adj_box.pack_start(self.adj_label, False, False, 0)
+
+        btn_plus = Gtk.Button(label="+")
+        btn_plus.connect("clicked", lambda w: self.change_adjustment(1))
+        adj_box.pack_start(btn_plus, False, False, 0)
+
+        self.update_calendar()
+
+    def update_calendar(self):
+        for child in self.calendar_grid.get_children():
+            self.calendar_grid.remove(child)
+
+        self.header_label.set_text(f"{MONTHS_EN[self.current_month]} {self.current_year}")
+
+        first_wd = self.settings.get("first_weekday", 0)
+        weekdays_ordered = WEEKDAYS[first_wd:] + WEEKDAYS[:first_wd]
+
+        for i, day in enumerate(weekdays_ordered):
+            label = Gtk.Label(label=day)
+            label.get_style_context().add_class("weekday")
+            self.calendar_grid.attach(label, i, 0, 1, 1)
+
+        first_day = Hijri(self.current_year, self.current_month, 1)
+        first_gregorian = first_day.to_gregorian()
+        python_weekday = date(first_gregorian.year, first_gregorian.month, first_gregorian.day).weekday()
+        python_weekday = (python_weekday - self.adjustment) % 7
+        col = (python_weekday - first_wd) % 7
+
+        days_in_month = first_day.month_length()
+
+        row = 1
+
+        for day in range(1, days_in_month + 1):
+            label = Gtk.Label(label=str(day))
+            label.get_style_context().add_class("day")
+
+            if (day == self.today_hijri.day and
+                self.current_month == self.today_hijri.month and
+                self.current_year == self.today_hijri.year):
+                label.get_style_context().add_class("today")
+
+            self.calendar_grid.attach(label, col, row, 1, 1)
+
+            col += 1
+            if col > 6:
+                col = 0
+                row += 1
+
+        self.show_all()
+
+    def prev_month(self, widget):
+        self.current_month -= 1
+        if self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
+        self.update_calendar()
+
+    def next_month(self, widget):
+        self.current_month += 1
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
+        self.update_calendar()
+
+    def go_today(self, widget):
+        today = date.today()
+        hijri = Gregorian(today.year, today.month, today.day).to_hijri()
+        if self.adjustment:
+            hijri = self.apply_hijri_adjustment(hijri, self.adjustment)
+        self.current_year = hijri.year
+        self.current_month = hijri.month
+        self.today_hijri = hijri
+        self.update_calendar()
+
+    def change_adjustment(self, delta):
+        new_adj = self.adjustment + delta
+        if -3 <= new_adj <= 3:
+            self.save_adjustment(new_adj)
+            self.adj_label.set_text(f"{new_adj:+d}" if new_adj else "0")
+            self.go_today(None)
+
+    def show_settings(self, widget):
+        dialog = Gtk.Dialog(title="Settings", parent=self, flags=0)
+        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        dialog.set_default_size(200, 100)
+
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.pack_start(hbox, False, False, 5)
+
+        label = Gtk.Label(label="First day of week:")
+        hbox.pack_start(label, False, False, 0)
+
+        combo = Gtk.ComboBoxText()
+        combo.append_text("al-Ahad (Sun)")
+        combo.append_text("al-Ithnayn (Mon)")
+        first_wd = self.settings.get("first_weekday", 6)
+        combo.set_active(0 if first_wd == 6 else 1)
+        hbox.pack_start(combo, True, True, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+
+        if response == Gtk.ResponseType.OK:
+            self.settings["first_weekday"] = 6 if combo.get_active() == 0 else 0
+            save_settings(self.settings)
+            self.update_calendar()
+
+        dialog.destroy()
+
+    def on_key_press(self, widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self.close()
+        elif event.keyval == Gdk.KEY_Left:
+            self.prev_month(None)
+        elif event.keyval == Gdk.KEY_Right:
+            self.next_month(None)
+
+if __name__ == "__main__":
+    lock = acquire_lock()
+    if lock is None:
+        os.system(f"pkill -f 'python.*hijri-calendar'")
+        sys.exit(0)
+
+    win = HijriCalendar()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
